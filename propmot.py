@@ -227,6 +227,8 @@ for i in range(len(x)):
 	#If locations are within one arcsecond, continue
 	if i!= len(x)-1 and i!=0 and np.abs(ra_matched[i] - ra_matched[i-1]) < 0.000277778:
 		continue
+	elif i == 0:
+		continue
 	else:
 		for l in range(index,i):
 			ra_real.append(ra_matched[l])
