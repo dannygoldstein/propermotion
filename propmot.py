@@ -1,9 +1,6 @@
-import glob
 import os
-import csv
 import pandas as pd
 import matplotlib.pyplot as plt
-from itertools import zip_longest
 from astropy.io import fits
 from astropy.io import ascii
 from astropy.wcs import WCS
@@ -24,8 +21,14 @@ from iminuit.cost import LeastSquares
 
 zuds.init_db()
 
+
+#Once testing is done, use sys.argv[0] here
+
 file_list = os.listdir('/home/conor/.data/newdata/')
 
+
+
+#Read in ZTF science image FITS files and sort them
 
 files = []
 coords = []
@@ -38,37 +41,7 @@ for file in file_list:
 coords.sort()
 files.sort()
 
-
-
-matches = []
-dates = []
-
-check = '/home/conor/.data/newdata/ztf_20200715280428_000762_zg_c01_o_q1_sciimg.fits'
-
-lgo = fits.open(check)
-
-magb = lgo[0].header['MAGZP']
-
-sci = zuds.ScienceImage.from_file(check)
-
-yep = sci.gaia_dr2_calibrators()
-
-
-gpmra = yep['pmra']
-gpmdec = yep['pmdec']
-gpmra_err = yep['pmra_error']
-gpmdec_err = yep['pmdec_error']
-gra = yep['ra']
-gdec = yep['dec']
-
-
-gra2 = []
-gdec2 = []
-
-for i in range(len(gra)):
-	gra2.append(gra[i])
-	gdec2.append(gdec[i])
-
+#Read in files until one with a decent seeing and mag limit is found
 
 i = 0
 for image in files:
@@ -76,44 +49,46 @@ for image in files:
 	if f.header['MAGLIM'] > 20.5 and f.header['SEEING'] <= 2:
 		base_image = image
 		base_coord = coords[i]
+		magb = f.header['MAGZP']
+		date_base = f.header['OBSJD']
+		
 		break
 	i+=1
 	
 
-f = fits.open(base_coord)
+#Read in base image to pull Gaia data to calibrate proper motions later
 
+
+sci = zuds.ScienceImage.from_file(base_image)
+
+gaia = sci.gaia_dr2_calibrators()
+
+
+gpmra = gaia['pmra']
+gpmdec = gaia['pmdec']
+gpmra_err = gaia['pmra_error']
+gpmdec_err = gaia['pmdec_error']
+gra = gaia['ra']
+gdec = gaia['dec']
+
+#Put data into a form that SkyCoord will accept
+
+gra2 = []
+gdec2 = []
+
+for i in range(len(gra)):
+	gra2.append(gra[i])
+	gdec2.append(gdec[i])
+	
+#Read in base cat file and read in base coords
+
+f = fits.open(base_coord)
 
 ra_base = f[2].data['XWIN_WORLD']
 dec_base = f[2].data['YWIN_WORLD']
-ra_basserr = f[2].data['ERRAWIN_IMAGE'] * 1.012
-dec_baseerr = f[2].data['ERRBWIN_IMAGE'] * 1.012
+ra_basserr = np.sqrt(f[2].data['ERRX2WIN_IMAGE']) * 1.012 * 1000
+dec_baseerr = np.sqrt(f[2].data['ERRY2WIN_IMAGE']) * 1.012 * 1000
 
-
-fit = fits.open(base_image)
-date_base = fit[0].header['OBSJD']
-
-dates.append(date_base)
-
-
-'''sci = zuds.ScienceImage.from_file('/home/conor/.data/newdata/ztf_20200715280428_000762_zg_c01_o_q1_sciimg.fits')
-
-ra_g = []
-dec_g = []
-pmra_g = []
-pmdec_g = []
-
-columns = sci.gaia_dr2_calibrators()
-rag = columns['ra']
-decg = columns['dec']
-pmrag = columns['pmra']
-pmdecg = columns['pmdec']
-
-
-for i in range(len(rag)):
-    ra_g.append(rag[i])
-    dec_g.append(decg[i])
-    pmra_g.append(pmrag[i])
-    pmdec_g.append(pmdecg[i])'''
 
 
 files.remove(base_image)
@@ -126,6 +101,12 @@ dec_err = []
 mag = []
 t_frame = []
 sn = []
+dates = []
+dates.append(date_base)
+
+
+
+#Save all dates in one list that will be accessed later to assign each location a date
 
 for file in files:
 
@@ -133,23 +114,26 @@ for file in files:
 
 	dates.append(fit[0].header['OBSJD'])
 
+	
 count = 0
 for reg in coords:
 	f = fits.open(reg)
 
 
 	for i in range(len(f[2].data['XWIN_WORLD'])):
+		#Sometimes when using stacked data, there are very large reported magnitudes
 		if f[2].data['MAG_AUTO'][i] + magb < 50:
 			ra.append(f[2].data['XWIN_WORLD'][i])
 			dec.append(f[2].data['YWIN_WORLD'][i])
 			mag.append(f[2].data['MAG_AUTO'][i] + magb)
+			#Err units should be in mas while ra and dec should be in degrees, which will be changed to mas later
 			ra_err.append(np.sqrt(f[2].data['ERRX2WIN_IMAGE'][i])*1.012*1000)
 			dec_err.append(np.sqrt(f[2].data['ERRY2WIN_IMAGE'][i])*1.012*1000)
 			sn.append(f[2].data['FLUX_AUTO'][i]/f[2].data['FLUXERR_AUTO'][i])
 	
 
-		
-	if count ==0:
+	#This is used later to assign dates	
+	if count == 0:
 		t_frame.append(0)
 		t_frame.append(t_frame[-1] + len(f[2].data['XWIN_WORLD'])-1)
 	else:
@@ -158,14 +142,17 @@ for reg in coords:
 
 	count+=1
 
-x = []
 
 
 
 stars = SkyCoord(ra=ra*u.degree,dec=dec*u.degree)
 idxs,idxself,sep2d,dist3d = stars.search_around_sky(SkyCoord(ra=ra_base*u.degree,dec=dec_base*u.degree),0.000277778*u.degree)
-	
 
+
+
+#Match stars in the base cat file to the other ZTF cat files
+
+x = []
 time = []
 ra_matched = []
 dec_matched = []
@@ -190,19 +177,18 @@ for j in range(len(sep2d.arcsecond)):
 	sn_matched.append(sn[idxself[j]])
 	
 
-
+#Determine date of star location by cross matching its position in ra with the time frame list
 
 for k in range(len(idxself)):
 	for l in range(len(t_frame)):
 		if idxself[k] <= t_frame[l] and idxself[k] > t_frame[l-1]:
+			#Units should be in yrs
 			time.append((dates[l-1]-date_base)/365)
 		
-pmra = []
-pmdec = []
-index = 0
 
 
-def line(x, a, b):  # simple straight line model with explicit parameters
+
+def line(x, a, b):  #Simple straight line model with explicit parameters
     return a + b * x
 
 
@@ -223,6 +209,9 @@ count = 0
 badsn = []
 badmag = []
 
+index = 0
+
+#Code to group stars tht are within one arcsecond with each other in chunks
 
 for i in range(len(x)):
 	ra_chunk = []
@@ -235,14 +224,14 @@ for i in range(len(x)):
 	ra_real = []
 	dec_real = []
 	sn_chunk = []
-	if i!=0 and np.abs(ra_matched[i] - ra_matched[i-1]) < 0.000277778:
-		continue
-	elif i == 0:
+	#If locations are within one arcsecond, continue
+	if i!= len(x)-1 and i!=0 and np.abs(ra_matched[i] - ra_matched[i-1]) < 0.000277778:
 		continue
 	else:
 		for l in range(index,i):
 			ra_real.append(ra_matched[l])
 			dec_real.append(dec_matched[l])
+			#Units in ra and dec chunks should be in mas now
 			ra_chunk.append((ra_matched[l]-ra_bmatched[l])*3600*1000)
 			dec_chunk.append((dec_matched[l]-dec_bmatched[l])*3600*1000)
 			sn_chunk.append(sn_matched[l])
@@ -253,6 +242,7 @@ for i in range(len(x)):
 			decerr_chunk.append(decerr_matched[l])
 		
 		index = i
+		#Want at least 10% of files to be represented
 		if len(t_chunk) < 10:
 			continue
 
@@ -277,8 +267,8 @@ for i in range(len(x)):
 
 
 
-
-
+		#Run Minuit on outlier-free ra and dec chunks
+		
 		least_squares = LeastSquares(newt_chunk, new_chunk1, new_chunk3,line)
 
 
@@ -298,68 +288,27 @@ for i in range(len(x)):
 
 		
 
-		
-		'''yes = []
-		yes1 = []
-
-		for i in range(len(newt_chunk)):
-			yes.append(newt_chunk[i]*m.values['b']+m.values['a'])
-			yes1.append(newt_chunk[i]*m1.values['b']+m1.values['a'])
-		if np.median(new_mag) >16 and np.median(new_mag) < 19:
-			plt.errorbar(new_chunk1,new_chunk2,xerr= new_chunk4, yerr = new_chunk3,fmt = 'o',ecolor = 'b',capthick=1,capsize = 2)
-			plt.scatter(yes,yes1,color = 'r')
-			plt.title('Postions of Predicted (Red) and Measured (Blue)')
-			plt.ylabel('Declination offset from base image (arcsec)')
-			plt.xlabel('Right ascension offset from base image (arcsec)')
-			plt.show()'''
-
+		#Run linear regression with scipy.stats
 		slope, intercept, r_value, p_value, std_err = stats.linregress(newt_chunk,new_chunk)
 		slope1, intercept1, r_value1, p_value1,std_err1 = stats.linregress(newt_chunk,new_chunk1)
 		slope2, intercept2, r_value2, p_value2,std_err2 = stats.linregress(newt_chunk,new_chunk2)
 
 		stars = SkyCoord(ra=[np.median(ra_real)]*u.degree,dec=[np.median(dec_real)]*u.degree)
 		idxs,idxself,sep2d,dist3d = stars.search_around_sky(SkyCoord(ra=gra2*u.degree,dec=gdec2*u.degree),0.000277778*u.degree)
-
+		
+		#Check if stars are blended together
 		if len(idxs) > 1:
 			continue
-
-
-		'''if m.values['b'] > 1000:
-
-			y = []
-
-			for i in range(len(newt_chunk)):
-				y.append(newt_chunk[i]*m.values['b'] + m.values['a'])
-
-
-
-			plt.errorbar(newt_chunk,new_chunk1,yerr = new_chunk3,ls = 'none')
-			plt.plot(newt_chunk,y)
-			plt.show()'''
 
 
 		chunksra.append(np.median(ra_real))
 		chunksdec.append(np.median(dec_real))
 		chunkspmra.append(m.values['b'])
 		chunkspmdec.append(m1.values['b'])
-		chunkspmraerr.append(m1.errors['b'])
-		chunkspmdecerr.append(m.errors['b'])
+		chunkspmraerr.append(m.errors['b'])
+		chunkspmdecerr.append(m1.errors['b'])
 		chunksmag.append(np.median(new_mag))
 		chunkssn.append(np.median(sn_chunk))
-
-		
-		'''if slope1 * 365 * 3600000> 100:
-			
-			print(slope1*365*3600000)
-
-
-			print(ra_chunk)
-			print(dec_chunk)
-
-			print(slope1 * 365 * 3600000)
-			print(slope2 * 365 * 3600000)
-			print(std_err1* 365 * 3600000)
-			print(std_err2* 365 * 3600000)'''
 			
 
 
@@ -372,10 +321,7 @@ pmraerr_matched = []
 sn_matched = []
 mag_matched = []
 
-
-
-ras = []
-
+#Cross check with Gaia proper motions
 
 stars = SkyCoord(ra=chunksra*u.degree,dec=chunksdec*u.degree)
 idxs,idxself,sep2d,dist3d = stars.search_around_sky(SkyCoord(ra=gra2*u.degree,dec=gdec2*u.degree),0.000277778*u.degree)
@@ -393,14 +339,10 @@ for i in range(len(pmra_matched)):
 	model.append((pmra_matched[i]-gmra_matched[i])/pmraerr_matched[i])
 
 count = 0
-model1 = []
-gmra_matched1 = []
+
 for i in range(len(model)):
 	if np.abs(model[i]) < 2:
 		count +=1
-	if np.abs(sn_matched[i]) < 15:
-		model1.append(model[i])
-		gmra_matched1.append(gmra_matched[i])
 		
 print(count/len(idxs))
 
@@ -408,11 +350,11 @@ print(count/len(idxs))
 
 
 #plt.errorbar(gmra_matched,model,yerr = pmraerr_matched,xerr = gmraerr_matched,fmt = 'o',ecolor = 'b',capthick=1,capsize = 2)
-plt.scatter(gmra_matched1,model1)
+plt.scatter(gmra_matched,model)
 #ax.add_artist(plt.scatter(mag2,x2,color = 'r'))
 #plt.plot(gmra_matched,gmra_matched)
 plt.xlabel("Gaia Proper Motion in RA (mas/yr)")
-plt.ylabel("Simga Offset from True Values")
+plt.ylabel("Simga Offset from True Values (Using ZTF Errors)")
 plt.title('Gaia vs ZTF Proper Motions')
 plt.show()
 
