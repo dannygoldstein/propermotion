@@ -15,7 +15,7 @@ PIX_SCALE = 1.012 * u.arcsec
 zuds.init_db()
 
 # get the list of science images to read from the command line
-image_list = sys.argv[0]
+image_list = sys.argv[1]
 
 # load in image paths
 image_paths = np.genfromtxt(image_list, encoding='ascii', dtype=None)
@@ -33,6 +33,7 @@ images = list(
 
 # make catalogs
 for i in images:
+    i.mask_image = zuds.MaskImage.from_file(i.local_path.replace('sci', 'msk'))
     i.catalog = zuds.PipelineFITSCatalog.from_image(i)
 
 # define the base image as the chronologically first image, pop it off the stack
@@ -53,7 +54,7 @@ gaia_coords = SkyCoord(ra=gaia['ra'], dec=gaia['dec'], unit='deg')
 idx_gaia, idx_base, _, _ = base_coords.search_around_sky(gaia_coords, 1 * u.arcsec)
 
 # prune the base and gaia catalogs, keeping only the matches in both catalogs
-base_catalog = base_image.catalog[idx_base]
+base_catalog = base_image.catalog.data[idx_base]
 gaia_catalog = gaia[idx_gaia]
 base_coords = base_coords[idx_base]
 
@@ -80,55 +81,39 @@ for img_ind, other in enumerate(images):
 # fit a line to the motion of each star
 for base_index in match_dictionary:
 
+    # initialize the output plot
+    fig, ax = plt.subplots(nrows=2, sharex=True, figsize=(4, 8))
+    
     # fit RA and Dec separately, then combine
-    for key in ['ra', 'dec']:
+    for key, a in zip(['ra', 'dec'], ax):
         sex_key = 'XWIN_WORLD' if key == 'ra' else 'YWIN_WORLD'
         err_key = 'ERRX2WIN_IMAGE' if key == 'ra' else 'ERRY2WIN_IMAGE'
 
         # get the ztf position and error along this axis for all matched stars
-        y_data_deg, var_pix2 = np.asarray([
-            image_list[img_idx].catalog[row_idx][[sex_key, err_key]]
+        y_data_deg = np.asarray([
+            images[img_idx].catalog.data[row_idx][sex_key]
             for img_idx, row_idx in match_dictionary[base_index]
-        ]).T
+        ])
 
+        var_pix2 = np.asarray([
+            images[img_idx].catalog.data[row_idx][err_key]
+            for img_idx, row_idx in match_dictionary[base_index]
+        ])
+        
         # get the mjd of the image of each matched star
-        x = np.asarray([image_list[img_idx].mjd for img_idx, _ in
+        x = np.asarray([images[img_idx].mjd for img_idx, _ in
                         match_dictionary[base_index]])
 
         # convert from variance to sigma
         sigma_deg = (np.sqrt(var_pix2) * PIX_SCALE).to('deg').value
 
-        """
-        # scale the data to keep the optimizer happy
-        scaler = sklearn.preprocessing.MinMaxScaler()
-        x_scaled, y_scaled = scaler.fit_transform(
-            np.asarray([x, y_data_deg]).T
-        ).T
-
-        # scale the errors
-        sigma_scaled = sigma_deg / (sigma_deg.max() - sigma_deg.min())
-        """
-
         def objective_function(parameters):
             """The chi-squared of the model against the data. Minimize this."""
             slope, intercept = parameters
-            y_mod = slope * x + intercept
-            chi = (y_mod - y_data_deg) / sigma_deg
+            y_mod_deg = slope * x + intercept
+            chi = (y_mod_deg - y_data_deg) / sigma_deg
             return np.sum(chi * chi)
 
         # minimize the function
         guess = linregress(x, y_data_deg)
-        minres = fmin_l_bfgs_b(objective_function, guess[:2])
-
-
-"""
-# plt.errorbar(gmra_matched,model,yerr = pmraerr_matched,xerr = gmraerr_matched,fmt = 'o',ecolor = 'b',capthick=1,capsize = 2)
-plt.scatter(gmra_matched, model)
-# ax.add_artist(plt.scatter(mag2,x2,color = 'r'))
-# plt.plot(gmra_matched,gmra_matched)
-plt.xlabel("Gaia Proper Motion in RA (mas/yr)")
-plt.ylabel("Simga Offset from True Values (Using ZTF Errors)")
-plt.title('Gaia vs ZTF Proper Motions')
-plt.show()
-"""
-
+        minres = fmin_l_bfgs_b(objective_function, guess[:2], approx_grad=True)
