@@ -1,8 +1,8 @@
 import sys
 import zuds
-import sklearn
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.offsetbox import AnchoredText
 
 from astropy.coordinates import SkyCoord
 from astropy import units as u
@@ -83,7 +83,7 @@ for base_index in match_dictionary:
 
     # initialize the output plot
     fig, ax = plt.subplots(nrows=2, sharex=True, figsize=(4, 8))
-    
+
     # fit RA and Dec separately, then combine
     for key, a in zip(['ra', 'dec'], ax):
         sex_key = 'XWIN_WORLD' if key == 'ra' else 'YWIN_WORLD'
@@ -99,7 +99,7 @@ for base_index in match_dictionary:
             images[img_idx].catalog.data[row_idx][err_key]
             for img_idx, row_idx in match_dictionary[base_index]
         ])
-        
+
         # get the mjd of the image of each matched star
         x = np.asarray([images[img_idx].mjd for img_idx, _ in
                         match_dictionary[base_index]])
@@ -117,3 +117,22 @@ for base_index in match_dictionary:
         # minimize the function
         guess = linregress(x, y_data_deg)
         minres = fmin_l_bfgs_b(objective_function, guess[:2], approx_grad=True)
+        slope_fit, intercept_fit = minres[0]
+
+        # plot the result
+        a.plot(x, slope_fit * x + intercept_fit)
+        a.errorbar(x, y_data_deg, yerr=sigma_deg, marker='.', linestyle='none')
+        a.set_ylabel(f'{key}_ZTF (deg)')
+
+        text = f'Gaia pm_{key} = {gaia[base_index]["pm" + key]} mas / yr\n' \
+               f'ZTF pm_{key} = {(slope_fit * u.degree / u.day).to("mas/yr")}\n' \
+               f'chisq_reduced_ZTF = {slope_fit[1] / len(x):.2e}'
+        a.add_artist(text, loc='upper right')
+        a.minorticks_on()
+        a.tick_params(which='both', direction='in', bottom=True, top=True,
+                      left=True, right=True)
+
+        if key == 'dec':
+            a.set_xlabel('MJD [days]')
+            
+    fig.savefig(f'{base_index:05d}.fit.pdf')
